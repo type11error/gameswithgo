@@ -2,20 +2,26 @@ package main
 
 import (
   "fmt"
+  "runtime"
+  "sync"
+  "time"
   "github.com/veandco/go-sdl2/sdl"
 )
 
 const winWidth int = 800
 const winHeight int = 600
 
+// calculate a value between two numbers given a percentage
 func lerp(b1 byte, b2 byte, pct float32) byte {
   return byte(float32(b1) + pct*(float32(b2)-float32(b1)))
 }
 
+// lerp for a color value
 func colorLerp(c1, c2 color, pct float32) color {
   return color{lerp(c1.r, c2.r, pct), lerp(c1.g, c2.g, pct), lerp(c1.b, c2.b, pct)}
 }
 
+// calculate a 256 gradient between two colors
 func getGradient(c1, c2 color) []color {
   result := make([]color, 256)
   for i := range result {
@@ -25,6 +31,37 @@ func getGradient(c1, c2 color) []color {
   return result
 }
 
+func getDualGradient(c1,c2,c3,c4 color) [] color {
+  result := make([]color, 256)
+  for i := range result {
+    pct := float32(i) / float32(255)
+    if pct < 0.5 {
+      result[i] = colorLerp(c1, c2, pct*float32(2))
+    } else {
+      result[i] = colorLerp(c3, c4, pct*float32(1.5)-float32(0.5))
+    }
+  }
+  return result
+}
+
+func turbulence(x, y, frequency, lacunarity, gain float32, octaves int) float32 {
+  var sum float32
+  amplitude := float32(1)
+
+  for i := 0; i < octaves; i++ {
+    f := snoise2(x*frequency, y*frequency) * amplitude
+    if f < 0 {
+      f = -1.0 * f
+    }
+
+    sum += f
+    frequency *= lacunarity
+    amplitude *= gain
+  }
+  return sum
+}
+
+// make a value only between a min and max
 func clamp(min, max, v int) int {
   if v < min {
     v = min
@@ -35,6 +72,7 @@ func clamp(min, max, v int) int {
   return v
 }
 
+// 
 func rescaleAndDraw(noise []float32, min, max float32, gradient []color, pixels []byte) {
   scale := 255.0 / (max - min)
   offset := min * scale
@@ -60,18 +98,45 @@ func fbm2(x,y,frequency,lacunarity, gain float32, octaves int) float32 {
   return sum
 }
 
-func makeNoise(pixels []byte, frequency, lac, gain float32, octaves int) {
-  noise := make([]float32, winWidth*winHeight)
+func makeNoise(pixels []byte, frequency, lac, gain float32, octaves int, w, h int) {
+  startTime := time.Now()
+  noise := make([]float32, w*h)
 
   fmt.Println("freq:",frequency,"lac:", lac, "gain:", gain, "octaves:", octaves)
 
-  i := 0
   min := float32(9999.0)
   max := float32(-9999.0)
 
+  numRoutines := runtime.NumCPU()
+  var wg sync.WaitGroup
+  wg.Add(numRoutines)
+
+  batchSize := len(noise) / numRoutines
+
+  for i := 0; i < numRoutines; i++ {
+    go func (i int) {
+      defer wg.Done()
+      start := i * batchSize
+      end := start + batchSize - 1
+      for j := start; j < end; j++ {
+        x := j % w
+        y := (j-x) / h
+
+        noise[j] = turbulence(float32(x), float32(y), frequency, lac, gain, octaves)
+        if noise[j] < min {
+          min = noise[j]
+        } else if noise[j] > max {
+          max = noise[j]
+        }
+      }
+    }(i)
+  }
+
+  /*
   for y := 0; y < winHeight; y++ {
     for x := 0; x < winWidth; x++ {
-      noise[i] = fbm2(float32(x), float32(y), frequency, lac, gain, octaves)
+      //noise[i] = fbm2(float32(x), float32(y), frequency, lac, gain, octaves)
+      noise[i] = turbulence(float32(x), float32(y), frequency, lac, gain, octaves)
       if noise[i] < min {
         min = noise[i]
       } else if noise[i] > max {
@@ -80,8 +145,14 @@ func makeNoise(pixels []byte, frequency, lac, gain float32, octaves int) {
       i++
     }
   }
+  */
 
-  gradient := getGradient(color{255,0,0}, color{0,0,255})
+  wg.Wait()
+  elapsedTime := time.Since(startTime).Seconds() * 1000.0
+  fmt.Println(elapsedTime)
+
+  gradient := getGradient(color{255,0,0}, color{255,254,0})
+  //gradient := getDualGradient(color{0,0,175}, color{80,160,244}, color{12,192,75}, color{255,255,255})
   rescaleAndDraw(noise, min, max, gradient, pixels)
 }
 
@@ -139,7 +210,7 @@ func main() {
   gain := float32(.2)
   lac := float32(3.0)
   octaves := 3
-  makeNoise(pixels, frequency, lac, gain, octaves)
+  makeNoise(pixels, frequency, lac, gain, octaves, winWidth, winHeight)
   keyState := sdl.GetKeyboardState()
 
   running := true
@@ -159,19 +230,19 @@ func main() {
     }
     if keyState[sdl.SCANCODE_O] != 0 {
       octaves = octaves + 1*mult
-      makeNoise(pixels, frequency, lac, gain, octaves)
+      makeNoise(pixels, frequency, lac, gain, octaves, winWidth, winHeight)
     }
     if keyState[sdl.SCANCODE_F] != 0 {
       frequency = frequency + .001*float32(mult)
-      makeNoise(pixels, frequency, lac, gain, octaves)
+      makeNoise(pixels, frequency, lac, gain, octaves, winWidth, winHeight)
     }
     if keyState[sdl.SCANCODE_G] != 0 {
       gain = gain + .1*float32(mult)
-      makeNoise(pixels, frequency, lac, gain, octaves)
+      makeNoise(pixels, frequency, lac, gain, octaves, winWidth, winHeight)
     }
     if keyState[sdl.SCANCODE_L] != 0 {
       lac = lac + .1*float32(mult)
-      makeNoise(pixels, frequency, lac, gain, octaves)
+      makeNoise(pixels, frequency, lac, gain, octaves, winWidth, winHeight)
     }
 
     tex.Update(nil, pixels, winWidth*4)
