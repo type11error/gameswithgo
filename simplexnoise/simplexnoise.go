@@ -99,6 +99,8 @@ func fbm2(x,y,frequency,lacunarity, gain float32, octaves int) float32 {
 }
 
 func makeNoise(pixels []byte, frequency, lac, gain float32, octaves int, w, h int) {
+  var mutex &sync.Mutex{}
+
   startTime := time.Now()
   noise := make([]float32, w*h)
 
@@ -123,11 +125,20 @@ func makeNoise(pixels []byte, frequency, lac, gain float32, octaves int, w, h in
         y := (j-x) / h
 
         noise[j] = turbulence(float32(x), float32(y), frequency, lac, gain, octaves)
-        if noise[j] < min {
-          min = noise[j]
-        } else if noise[j] > max {
-          max = noise[j]
+
+        // Is this correct?
+        if noise[j] < min || noise[j] > max {
+          mutex.Lock()
+
+          if noise[j] < min {
+            min = noise[j]
+          } else if noise[j] > max {
+            max = noise[j]
+          }
+
+          mutex.Unlock()
         }
+
       }
     }(i)
   }
