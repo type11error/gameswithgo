@@ -3,6 +3,7 @@ package noise
 import (
   "runtime"
   "sync"
+  "math"
 )
 
 type NoiseType int
@@ -54,26 +55,28 @@ func Fbm2(x,y,frequency,lacunarity, gain float32, octaves int) float32 {
 
 // MakeNoise generates a 2d block of noise
 func MakeNoise(noiseType NoiseType, frequency, lac, gain float32, octaves int, w, h int) (noise []float32, min, max float32) {
-  var mutex = &sync.Mutex{}
   noise = make([]float32, w*h)
-
-  min = float32(9999.0)
-  max = float32(-9999.0)
-
   numRoutines := runtime.NumCPU()
   var wg sync.WaitGroup
   wg.Add(numRoutines)
-
   batchSize := len(noise) / numRoutines
+
+  minMaxChan := make(chan float32, numRoutines*2)
+
+  min = float32(math.MaxFloat32)
+  max = float32(-math.MaxFloat32)
+
 
   for i := 0; i < numRoutines; i++ {
     go func (i int) {
       defer wg.Done()
+      innerMin := float32(math.MaxFloat32)
+      innerMax := float32(-math.MaxFloat32)
       start := i * batchSize
       end := start + batchSize - 1
       for j := start; j < end; j++ {
         x := j % w
-        y := (j-x) / h
+        y := (j-x) / w
 
         if noiseType == TURBULENCE {
           noise[j] = Turbulence(float32(x), float32(y), frequency, lac, gain, octaves)
@@ -81,24 +84,29 @@ func MakeNoise(noiseType NoiseType, frequency, lac, gain float32, octaves int, w
           noise[j] = Fbm2(float32(x), float32(y), frequency, lac, gain, octaves)
         }
 
-        // Is this correct?
-        if noise[j] < min || noise[j] > max {
-          mutex.Lock()
-
-          if noise[j] < min {
-            min = noise[j]
-          } else if noise[j] > max {
-            max = noise[j]
-          }
-
-          mutex.Unlock()
+        if noise[j] < innerMin {
+          innerMin = noise[j]
+        } else if noise[j] > innerMax {
+          innerMax = noise[j]
         }
 
       }
+
+      minMaxChan <- innerMin
+      minMaxChan <- innerMax
     }(i)
   }
 
   wg.Wait()
+  close(minMaxChan)
+
+  for v := range minMaxChan {
+    if v < min {
+      min = v
+    } else if v > max {
+      max = v
+    }
+  }
 
   return noise, min, max
 
